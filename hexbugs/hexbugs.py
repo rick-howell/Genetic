@@ -10,19 +10,19 @@ from typing import List, Tuple, Dict
 MIN_X, MAX_X = 0, 1.92
 MIN_Y, MAX_Y = 0, 1.08
 
-STARTING_AGENTS = 10
+STARTING_AGENTS = 50
 NUM_GENES = 64
 MUTATION_RATE = 0.005
 MITOSIS_ENERGY_THRESHOLD = 1.0
 ENERGY_LOSS_RATE = 0.0001
 MIN_SPEED, MAX_SPEED = 0.0001, 0.001
 
-NUM_FOOD = 1024
-FOOD_REPLENISH_RATE = 0.1
+NUM_FOOD = 256
+FOOD_REPLENISH_RATE = 0.5
 
 NUM_STIM = 32
 
-NUM_ROCKS = 10
+NUM_ROCKS = 40
 
 # Global parameters for display
 DISPLAY_WIDTH, DISPLAY_HEIGHT = 1440, 810
@@ -30,13 +30,10 @@ WINDOW_NAME = 'Evolution Simulation'
 
 # Global color palette (in BGR format for OpenCV)
 COLORS = {
-    'BACKGROUND': (0, 0, 0),    
+    'BACKGROUND': (230, 230, 230),    
     'ORGANIC_FOOD': (64, 190, 64),   # Green
-    'STIM': (0, 255, 255),          # Yellow
+    'STIM': (0, 192, 192),
     'ROCK': (128, 128, 128),       # Gray
-    'AGENT': (0, 0, 255),          # Red
-    'AGENT_LOOK': (24, 24, 128),   # Dark red
-    'DEAD_AGENT': (128, 0, 128)    # Purple
 }
 
 
@@ -44,9 +41,9 @@ GLOBAL_SCALE = np.abs((MAX_X - MIN_X) + (MAX_Y - MIN_Y)) / 2
 
 class GraphBrain:
     def __init__(self, genome: str):
-        self.input_nodes = ['stim_touch', 'rock_touch', 'organic_food_in_sight', 'obstacle_ahead', 'agent_ahead', 'energy_level', 'age']
+        self.input_nodes = ['stim_touch', 'rock_touch', 'food_touch', 'organic_food_in_sight', 'obstacle_ahead', 'energy_level', 'age']
         self.output_nodes = ['change_direction', 'speed_up', 'slow_down', 'eat', 'mitosis']
-        self.operation_nodes = ['add', 'invert', 'random', 'sin', 'zero', 'identity']
+        self.operation_nodes = ['add', 'invert', 'random', 'osc', 'identity', 'gaussian']
         self.connections: Dict[str, List[Tuple[str, float]]] = self._decode_genome(genome)
 
     def _decode_genome(self, genome: str) -> Dict[str, List[Tuple[str, float]]]:
@@ -92,13 +89,13 @@ class GraphBrain:
         elif operation == 'invert':
             return value * -1
         elif operation == 'random':
-            return np.random.rand() * 2 - 1
-        elif operation == 'sin':
-            return np.sin(value * time.time() / (2 * np.pi))
-        elif operation == 'zero':
-            return 0
+            return (np.random.rand() * 2 - 1) * value
+        elif operation == 'osc':
+            return np.sin(time.time() / (2 * np.pi)) * value
         elif operation == 'identity':
             return value
+        elif operation == 'gaussian':
+            return np.exp(-value**2)
         else:
             return value
         
@@ -178,7 +175,7 @@ class Agent:
         sight_range = np.clip(sight_range, 0.0, 1.0)
         sight_range = np.power(sight_range, 0.85)
 
-        self.sight_range = (1.0 - sight_range) * 0.01 * GLOBAL_SCALE + sight_range * 0.1 * GLOBAL_SCALE
+        self.sight_range = (1.0 - sight_range) * 0.01 * GLOBAL_SCALE + sight_range * 0.125 * GLOBAL_SCALE
         self.sight_angle = sight_width * np.pi
 
     def move(self):
@@ -222,11 +219,12 @@ class Agent:
     
     def mitosis(self) -> 'Agent':
         """Create a new agent with a mutated genome."""
-        self.energy = np.minimum(1.0, self.energy / 2)
+        new_energy = np.minimum(1.0, self.energy / 2)
+        self.energy = new_energy
         new_genome = self.mutate_genome()
         random_pos = np.random.randn(2) * 0.01
 
-        new_agent = Agent(self.x + random_pos[0], self.y + random_pos[1], energy=self.energy)
+        new_agent = Agent(self.x + random_pos[0], self.y + random_pos[1], energy=new_energy)
         new_agent.direction = np.random.uniform(0, 2*np.pi)
         new_agent.genome = new_genome
         new_agent.brain = GraphBrain(new_genome)
@@ -276,7 +274,7 @@ class Environment:
             y = np.random.uniform(MIN_Y, MAX_Y)
 
             # Ensure food is not placed on top of a rock
-
+            '''
             for rock_x, rock_y, rock_radius in self.rocks:
                 if np.sqrt((rock_x - x)**2 + (rock_y - y)**2) <= rock_radius + 0.1:
                     # we'll move the food to the edge of the rock
@@ -287,7 +285,8 @@ class Environment:
                     new_x = rock_x - (rock_radius + 0.1) * np.cos(angle)
                     new_y = rock_y - (rock_radius + 0.1) * np.sin(angle)
                     x, y = new_x, new_y
-
+            '''
+            
             self.organic_food.append((x, y))
     
     def add_stim(self, num_stim):
@@ -331,9 +330,10 @@ class Environment:
         for i in range(len(self.rocks)):
             x, y, r = self.rocks[i]
             x = x + 0.0005
-            y = np.sin(x) * 0.0005 + y
+            y = y + np.random.randn() * 0.00025
             x = x % (MAX_X - MIN_X) + MIN_X
             y = y % (MAX_Y - MIN_Y) + MIN_Y
+            r = r * (1 + np.sin((time.time() + (np.pi * 2 * i / len(self.rocks)))/ 2) * 0.003)
             self.rocks[i] = (x, y, r)
 
         # Update agents
@@ -377,6 +377,7 @@ class Environment:
         inputs = {
             'stim_touch': self.stim_touch(agent),
             'rock_touch': self.rock_touch(agent),
+            'food_touch': self.food_touch(agent),
             'organic_food_in_sight': self.organic_food_in_sight(agent),
             'obstacle_ahead': self.obstacle_ahead(agent),
             'agent_ahead': self.agent_ahead(agent),
@@ -411,6 +412,18 @@ class Environment:
             distance = np.sqrt(dx**2 + dy**2)
 
             if distance <= rr + agent.eat_range:
+                return 1.0
+            
+        return 0.0
+    
+    def food_touch(self, agent: Agent) -> float:
+        # If the agent is touching food, return 1, else return 0
+        for fx, fy in self.organic_food:
+            dx = fx - agent.x
+            dy = fy - agent.y
+            distance = np.sqrt(dx**2 + dy**2)
+
+            if distance <= agent.eat_range:
                 return 1.0
             
         return 0.0
@@ -583,7 +596,7 @@ class Environment:
             if np.random.rand() < FOOD_REPLENISH_RATE:
                 self.add_organic_food(1)
 
-    def visualize(self):
+    def visualize(self, verbose: bool = False):
         # Create a background
         display = np.full((DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), COLORS['BACKGROUND'], dtype=np.uint8)
         
@@ -593,16 +606,13 @@ class Environment:
             display_y = int((y - MIN_Y) / (MAX_Y - MIN_Y) * DISPLAY_HEIGHT)
             return (display_x, display_y)
         
-        # Draw organic food (green circles)
         for food in self.organic_food:
             cv2.circle(display, sim_to_display(*food), 4, COLORS['ORGANIC_FOOD'], 3)
             cv2.circle(display, sim_to_display(*food), 4, (255, 255, 255), -1)
         
-        # Draw stim (yellow circles)
         for pos in self.stim:
-            cv2.circle(display, sim_to_display(*pos), 4, COLORS['STIM'], 1)
+            cv2.circle(display, sim_to_display(*pos), 4, COLORS['STIM'], 3)
         
-        # Draw rocks (gray rectangles)
         for rock in self.rocks:
             radius = rock[2]
             rx, ry = sim_to_display(radius, radius)
@@ -632,38 +642,36 @@ class Environment:
                 cv2.ellipse(display, pos, (rx, ry), direction * 180 / np.pi, 0, 360, color, 5)
                 # cv2.circle(display, pos, 5, color, -1)
 
-                # We'll display the agent's look range
-                look_range = agent.sight_range
-                look_width = agent.sight_angle
+                if verbose:
+                    # We'll display the agent's look range
+                    look_range = agent.sight_range
+                    look_width = agent.sight_angle
 
-                look_pos = sim_to_display(agent.x + look_range * np.cos(direction), agent.y + look_range * np.sin(direction))
-                cv2.circle(display, look_pos, 2, color, -1)
+                    look_pos = sim_to_display(agent.x + look_range * np.cos(direction), agent.y + look_range * np.sin(direction))
+                    cv2.circle(display, look_pos, 2, color, -1)
 
-                peripherals_left = sim_to_display(agent.x + look_range * np.cos(direction - look_width), agent.y + look_range * np.sin(direction - look_width))
-                # cv2.line(display, pos, peripherals_left, color, 1)
-                cv2.circle(display, peripherals_left, 2, color, -1)
+                    peripherals_left = sim_to_display(agent.x + look_range * np.cos(direction - look_width), agent.y + look_range * np.sin(direction - look_width))
+                    # cv2.line(display, pos, peripherals_left, color, 1)
+                    cv2.circle(display, peripherals_left, 2, color, -1)
 
-                peripherals_right = sim_to_display(agent.x + look_range * np.cos(direction + look_width), agent.y + look_range * np.sin(direction + look_width))
-                # cv2.line(display, pos, peripherals_right, color, 1)
-                cv2.circle(display, peripherals_right, 2, color, -1)
+                    peripherals_right = sim_to_display(agent.x + look_range * np.cos(direction + look_width), agent.y + look_range * np.sin(direction + look_width))
+                    # cv2.line(display, pos, peripherals_right, color, 1)
+                    cv2.circle(display, peripherals_right, 2, color, -1)
 
-                # cv2.line(display, peripherals_left, peripherals_right, color, 1)
+                    # cv2.line(display, peripherals_left, peripherals_right, color, 1)
 
-                # we'll also give the agent a little arrow to show its direction
-                f0 = 0.025 * GLOBAL_SCALE
-                f1 = 0.03 * GLOBAL_SCALE
-                arrow_start = sim_to_display(agent.x + f0 * np.cos(direction), agent.y + f0 * np.sin(direction))
-                arrow_end = sim_to_display(agent.x + f1 * np.cos(direction), agent.y + f1 * np.sin(direction))
-                cv2.arrowedLine(display, arrow_start, arrow_end, color, 2, tipLength=2)
+                    # we'll also give the agent a little arrow to show its direction
+                    f0 = 0.025 * GLOBAL_SCALE
+                    f1 = 0.03 * GLOBAL_SCALE
+                    arrow_start = sim_to_display(agent.x + f0 * np.cos(direction), agent.y + f0 * np.sin(direction))
+                    arrow_end = sim_to_display(agent.x + f1 * np.cos(direction), agent.y + f1 * np.sin(direction))
+                    cv2.arrowedLine(display, arrow_start, arrow_end, color, 2, tipLength=2)
 
-                '''
-                t0 = 0.05 * GLOBAL_SCALE
-                t1 = 0.02 * GLOBAL_SCALE
-                triangle_tip = sim_to_display(agent.x - t0 * np.cos(direction), agent.y - t0 * np.sin(direction))
-                triangle_left = sim_to_display(agent.x + t1 * np.cos(direction + np.pi/2), agent.y + t1* np.sin(direction + np.pi/2))
-                triangle_right = sim_to_display(agent.x + t1 * np.cos(direction - np.pi/2), agent.y + t1 * np.sin(direction - np.pi/2))
-                cv2.polylines(display, [np.array([triangle_tip, triangle_left, triangle_right], np.int32)], True, color, 2)
-                '''
+                
+                t0 = 0.02 * GLOBAL_SCALE
+                tx, ty = sim_to_display(agent.x - t0 * np.cos(direction), agent.y - t0 * np.sin(direction))
+                cv2.circle(display, (tx, ty), 3, color, 2)
+                
 
 
 
