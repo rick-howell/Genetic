@@ -1,0 +1,17 @@
+We are going to make a genetic algorithm
+
+We will make a world with a simple architecture, and simple agents
+
+The world
+    - Tempurature Gradient
+    - Areas of Sunlight
+    - Random Bits of Organic Matter
+    - Rocks
+
+The Agents
+    - x, y pos      : 0, 1
+    - direction     : angle [0, 2pi)
+    - age           : int
+    - stamina       : float
+    - look width    : angle [0, pi)
+    - look depth    : float
