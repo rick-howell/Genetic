@@ -29,20 +29,22 @@ BASE = 36
 MIN_X, MAX_X = 0, 1.92
 MIN_Y, MAX_Y = 0, 1.08
 
-STARTING_POPULATION, MAX_POPULATION = 4, 64
+STARTING_POPULATION, MAX_POPULATION = 16, 128
 
 DISPLAY_WIDTH, DISPLAY_HEIGHT = 1440, 810
 WINDOW_NAME = 'Ev Sim'
 
-NUM_GENES = 96
+NUM_GENES = 256
 HIDDEN_LAYERS = 3
-EAT_DISTANCE = 0.01
-ENERGY_LIMIT = 4.0
+EAT_DISTANCE = 0.02
+ENERGY_LIMIT = 8.0
 AGE_STEP = 1
-ENERGY_STEP = -0.00001
+ENERGY_STEP = -0.0001
 VELOCITY_LIMIT = 0.125
-MUTATION_RATE = 0.1
-MITOSIS_ENERGY = 0.5
+MUTATION_RATE = 0.01
+MITOSIS_ENERGY = 0.75
+
+TURN_THRESHOLD = 0.25
 
 FORCE_FACTOR = 0.05
 FRICTION = 0.1
@@ -88,8 +90,8 @@ class Brain:
         self.hidden_layers = hidden_layers
 
         self.input_nodes = ['osc1', 'osc2', 'osc3', 'rng', 'age', 'energy', 'direction', 'velocity', 'dist_food', 'dist_poison', 'touch_food', 'touch_poison']
-        self.output_nodes = ['move', 'turn', 'eat', 'mitosis']
-        self._hidden_nodes = ['identity', 'sum', 'invert', 'tanh', 'indicator', 'gaussian', 'am', 'divide', 'multiply']
+        self.output_nodes = ['move', 'turn', 'move_x', 'move_y', 'eat', 'mitosis']
+        self._hidden_nodes = ['identity', 'bias', 'invert', 'tanh', 'indicator', 'gaussian', 'am', 'divide', 'multiply', 'relu', 'zero']
         self.hidden_nodes = []
 
         for i in range(hidden_layers):
@@ -148,8 +150,8 @@ class Brain:
                 incoming = sum(node_values[src] * weight for src, connections in self.connections.items() for dest, weight in connections if dest == node)
                 if 'identity' in node:
                     new_values[node] = incoming
-                elif 'sum' in node:
-                    new_values[node] = sum(node_values.values())
+                elif 'bias' in node:
+                    new_values[node] = incoming + 0.5
                 elif 'invert' in node:
                     new_values[node] = -incoming
                 elif 'tanh' in node:
@@ -164,6 +166,10 @@ class Brain:
                     new_values[node] = incoming * 0.5
                 elif 'multiply' in node:
                     new_values[node] = incoming * 2.0
+                elif 'relu' in node:
+                    new_values[node] = max(0, incoming)
+                elif 'zero' in node:
+                    new_values[node] = 0.0
             node_values.update(new_values)
         
         # Process output layer
@@ -261,6 +267,16 @@ class Agent:
     
     def think(self, env_inputs: Dict[str, float]) -> Dict[str, float]:
         return self.brain.process(env_inputs)
+    
+    def set_color_from_genome(self):
+        hue = 0.0
+        for i in range(0, len(self.genome), self.gene_length):
+            chunk = self.genome[i:i+3]
+            hue += int(chunk, BASE) / (BASE ** 3 - 1)
+
+        hue = hue % 1.0
+
+        self.hls = (hue, 0.8, 0.8)
 
 
 
@@ -315,6 +331,7 @@ class Environment:
                 # We'll make the energy 1, and set the agent's position
                 self.agent_energy[index] = 1.0
                 self.agent_pos[index] = new_position
+                self.agent[index].set_color_from_genome()
 
                 self.num_agents += 1
 
@@ -348,9 +365,16 @@ class Environment:
             output: Dict[str, float] = agent.think(inputs)
 
             # We'll update the agent's velocity magnitude based on the output
-            turn_direction = output['turn'] * 0.0625 + np.arctan2(self.agent_vel[i][1], self.agent_vel[i][0])
+            turn_direction = 0.0
+            if np.abs(output['turn']) > TURN_THRESHOLD:
+                turn = (output['turn'] - TURN_THRESHOLD) / (1 - TURN_THRESHOLD)
+                turn_direction = turn * 0.05 + np.arctan2(self.agent_vel[i][1], self.agent_vel[i][0])
+
             velocity_magnitude = np.clip(output['move'], -1, 1)
+
             self.agent_vel[i] = np.array([np.cos(turn_direction), np.sin(turn_direction)]) * velocity_magnitude
+            self.agent_vel[i] += np.array([output['move_x'], output['move_y']]) * 0.05
+
 
             # We'll handle conditional outputs
             if output['eat'] > 0:
@@ -398,10 +422,10 @@ class Environment:
     def get_agent_inputs(self, index: int) -> Dict[str, float]:
         '''Get the inputs for the agent at the given index'''
         inputs = {
-            'osc1': np.sin(self.agent_age[index] / 100).item(),  # Oscillator 1, period 100
-            'osc2': np.sin(time.time()).item(), 
-            'osc3': 2 * np.floor(np.mod(time.time() / np.pi, 1)).item() - 1,  # Square wave oscillator
-            'rng': np.random.uniform(-1, 1),
+            'osc1': np.sin(self.agent_age[index] / 100).item() * 0.01,
+            'osc2': np.sin(time.time()).item() * 0.01, 
+            'osc3': np.floor(np.mod(time.time() / np.pi, 1)).item(),
+            'rng': np.random.randn() * 0.01,
             'age': np.tanh(self.agent_age[index] / 1000).item(),
             'energy': self.agent_energy[index].item(),
             'direction': np.arctan2(self.agent_vel[index][1], self.agent_vel[index][0]).item() / np.pi,
@@ -444,9 +468,9 @@ class Environment:
         distances = self.agent_poison_distances[agent_index]
         index = np.argmin(distances)
         if distances[index] <= POISON_RADIUS + POISON_SENSE:
-            return np.array([1.0])
+            return np.array([1.0]) + distances[index]
         else:
-            return np.array([0.0])
+            return np.array([-1.0])
         # return distances[index]
     
     def handle_eating(self, agent_index: int):
@@ -480,7 +504,7 @@ class Environment:
         self.agent_pos[agent_index] = self.agent_pos[agent_index]
         self.agent_energy[agent_index] = old_energy / 2
         self.agent_age[agent_index] = 0
-        self.agent[agent_index].hls = old_color
+        self.agent[agent_index].set_color_from_genome()
 
         if self.num_agents < MAX_POPULATION:
             new_index = np.argmin(self.agent_energy)
@@ -489,7 +513,7 @@ class Environment:
             self.agent_pos[new_index] = self.agent_pos[agent_index]
             self.agent_energy[new_index] = old_energy / 2
             self.agent_age[new_index] = 0
-            self.agent[new_index].hls = old_color
+            self.agent[new_index].set_color_from_genome()
             self.num_agents += 1
 
     def handle_poison(self):
@@ -588,6 +612,9 @@ class Environment:
         live_indices = live_agents.tolist()
 
         for i in live_indices:
+            radius = local_to_global((EAT_DISTANCE, EAT_DISTANCE))
+            radius = (radius[0] + radius[1]) / 2
+            radius = int(radius)
 
             pos = local_to_global(self.agent_pos[i])
             hls = self.agent[i].hls
@@ -598,7 +625,14 @@ class Environment:
 
             color = colorsys.hls_to_rgb(hls[0], light, hls[2])
             color = tuple([int(255 * c) for c in color])
-            image = cv2.circle(image, pos, 10, color, 5)
+            image = cv2.circle(image, pos, radius, color, 5)
+
+            if np.linalg.norm(self.agent_vel[i]) > 0.05:
+                # Draw the direction
+                angle = np.arctan2(self.agent_vel[i][1], self.agent_vel[i][0])
+                # Add a line in the direction of the agent
+                end_pos = (int(pos[0] + 2 * radius * np.cos(angle)), int(pos[1] + 2 * radius * np.sin(angle)))
+                image = cv2.line(image, pos, end_pos, color, 2)
 
         # Draw the food
         live_food = np.where(self.food_energy > 0)[0]
